@@ -7,8 +7,8 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Сплит">
-  <title>Сплит</title>
+  <meta name="apple-mobile-web-app-title" content="Split">
+  <title>Split</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -29,17 +29,19 @@
     </nav>
 
     <section class="stage" id="stage">
-      <div class="frame" id="frame"></div>
+      <div class="frame" id="frame">
+        <div class="cells" id="cells"></div>
+        <div class="line-dels" id="line-dels"></div>
+        <div class="edit-layer" id="edit-layer" hidden></div>
+      </div>
     </section>
 
     <nav class="rail rail-right" aria-label="Разделение">
-      <button class="tool" type="button" data-layout="cols" aria-label="Две части рядом">
-        <svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M12 3v18"/></svg>
-        <span>1 | 1</span>
+      <button class="tool" type="button" data-tool="h" aria-label="Провести горизонтальную линию">
+        <svg viewBox="0 0 24 24"><path d="M3 12h18"/><path d="m9 7 3-3 3 3M9 17l3 3 3-3" stroke-width="1.5"/></svg>
       </button>
-      <button class="tool" type="button" data-layout="rows" aria-label="Две части друг над другом">
-        <svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 12h16"/></svg>
-        <span>1 / 1</span>
+      <button class="tool" type="button" data-tool="v" aria-label="Провести вертикальную линию">
+        <svg viewBox="0 0 24 24"><path d="M12 3v18"/><path d="m7 9-3 3 3 3M17 9l3 3-3 3" stroke-width="1.5"/></svg>
       </button>
     </nav>
 

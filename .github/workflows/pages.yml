@@ -27,7 +27,7 @@ jobs:
       - name: Собрать сайт
         run: |
           mkdir _site
-          cp -r index.html styles.css app.js imaging.js sw.js manifest.webmanifest icons _site/
+          cp -r index.html styles.css app.js imaging.js layout.js sw.js manifest.webmanifest icons _site/
 
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5

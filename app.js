@@ -1,5 +1,6 @@
-// Сплит — коллажи для Instagram. Всё считается в браузере: фото не покидают устройство.
+// Split — коллажи для Instagram. Всё считается в браузере: фото не покидают устройство.
 import { ctx2d, decodeFile, disposePhoto, fitView, clampView, freeCanvas, loadPhoto, makeCanvas, paintCell, photoSize } from './imaging.js';
+import { addLine, cloneLines, computeFaces, crossings, dividedSpan, dragRange, extent, facesOk, junctions, removeLine, trimLine } from './layout.js';
 
 // Итоговые размеры — те, в которых Instagram показывает публикации.
 const FRAMES = {
@@ -7,21 +8,24 @@ const FRAMES = {
   post: { w: 1080, h: 1350 },
 };
 
-// Ячейки в долях фрейма: [x, y, ширина, высота].
-const LAYOUTS = {
-  cols: [[0, 0, 0.5, 1], [0.5, 0, 0.5, 1]],
-  rows: [[0, 0, 1, 0.5], [0, 0.5, 1, 0.5]],
-};
-
 const MAX_HISTORY = 50;
 
-const state = { frame: 'story', layout: 'cols', photos: [] };
+// photos[i] лежит в ячейке faces[i]; ячейки пересчитываются из линий.
+const state = { frame: 'story', lines: [], photos: [] };
+let faces = computeFaces(state.lines);
+// Режим линий: null — обычный, 'h' / 'v' — тап по фрейму проводит линию.
+let editMode = null;
+let selected = null;
 // Ячейки на экране: размеры в CSS-пикселях (w, h) и в пикселях устройства (dw, dh).
 let cells = [];
+let frameSize = { w: 0, h: 0 };
 
 const $ = (sel) => document.querySelector(sel);
 const stage = $('#stage');
 const frameEl = $('#frame');
+const cellsEl = $('#cells');
+const layer = $('#edit-layer');
+const delLayer = $('#line-dels');
 const picker = $('#picker');
 const saveBtn = $('#save');
 const undoBtn = $('#undo');
@@ -29,10 +33,10 @@ const redoBtn = $('#redo');
 
 // ---------- Геометрия ----------
 
-function cellRects(fw, fh) {
-  return LAYOUTS[state.layout].map(([x, y, w, h]) => {
-    const x0 = Math.round(x * fw), y0 = Math.round(y * fh);
-    const x1 = Math.round((x + w) * fw), y1 = Math.round((y + h) * fh);
+function faceRects(fw, fh) {
+  return faces.map((f) => {
+    const x0 = Math.round(f.x0 * fw), y0 = Math.round(f.y0 * fh);
+    const x1 = Math.round(f.x1 * fw), y1 = Math.round(f.y1 * fh);
     return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
   });
 }
@@ -44,10 +48,11 @@ function layoutFrame() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const fw = Math.round(f.w * s * dpr);
   const fh = Math.round(f.h * s * dpr);
-  frameEl.style.width = `${fw / dpr}px`;
-  frameEl.style.height = `${fh / dpr}px`;
+  frameSize = { w: fw / dpr, h: fh / dpr };
+  frameEl.style.width = `${frameSize.w}px`;
+  frameEl.style.height = `${frameSize.h}px`;
 
-  const rects = cellRects(fw, fh);
+  const rects = faceRects(fw, fh);
   if (cells.length !== rects.length) buildCells(rects.length);
   rects.forEach((r, i) => {
     const c = cells[i];
@@ -55,6 +60,7 @@ function layoutFrame() {
     Object.assign(c.el.style, {
       left: `${r.x / dpr}px`, top: `${r.y / dpr}px`, width: `${c.w}px`, height: `${c.h}px`,
     });
+    c.el.toggleAttribute('data-narrow', c.w < 96);
     if (c.canvas.width !== r.w || c.canvas.height !== r.h) {
       c.canvas.width = r.w;
       c.canvas.height = r.h;
@@ -62,10 +68,22 @@ function layoutFrame() {
     renderCell(i);
     if (state.photos[i]) schedulePatch(i);
   });
+  renderOverlay();
+}
+
+let layoutQueued = false;
+function requestLayout() {
+  if (layoutQueued) return;
+  layoutQueued = true;
+  requestAnimationFrame(() => {
+    layoutQueued = false;
+    layoutFrame();
+  });
 }
 
 function buildCells(n) {
-  frameEl.replaceChildren();
+  cells.forEach((c) => freeCanvas(c.canvas));
+  cellsEl.replaceChildren();
   cells = Array.from({ length: n }, (_, i) => {
     const el = document.createElement('div');
     el.className = 'cell';
@@ -84,14 +102,44 @@ function buildCells(n) {
         </button>
       </div>
       <div class="cell-busy"></div>`;
-    frameEl.append(el);
+    cellsEl.append(el);
     const c = { el, canvas: el.querySelector('canvas'), w: 0, h: 0, dw: 0, dh: 0 };
     el.querySelector('[data-act="rotate"]').addEventListener('click', () => rotate(i));
     el.querySelector('[data-act="replace"]').addEventListener('click', () => openPicker(i));
     attachGestures(c, i);
     return c;
   });
-  state.photos.length = n;
+}
+
+// Ячейки поменялись — фото переезжают туда, где у старой и новой ячейки больше общая площадь.
+// Если две ячейки слились, остаётся фото той, что занимала большую часть; второе можно вернуть отменой.
+function remapPhotos(oldFaces, oldPhotos, newFaces) {
+  const area = (f, g) => Math.max(0, Math.min(f.x1, g.x1) - Math.max(f.x0, g.x0))
+    * Math.max(0, Math.min(f.y1, g.y1) - Math.max(f.y0, g.y0));
+  const pairs = [];
+  oldFaces.forEach((f, i) => {
+    if (oldPhotos[i]) newFaces.forEach((g, j) => pairs.push([area(f, g), i, j]));
+  });
+  pairs.sort((p, q) => q[0] - p[0]);
+  const out = newFaces.map(() => undefined);
+  const used = new Set();
+  for (const [a, i, j] of pairs) {
+    if (a > 0 && !used.has(i) && !out[j]) {
+      out[j] = oldPhotos[i];
+      used.add(i);
+    }
+  }
+  return out;
+}
+
+function setLines(next) {
+  const nextFaces = computeFaces(next);
+  state.photos = remapPhotos(faces, state.photos, nextFaces);
+  state.lines = next;
+  faces = nextFaces;
+  if (!state.lines.some((l) => l.id === selected)) selected = null;
+  syncChoices();
+  layoutFrame();
 }
 
 // ---------- Отрисовка ----------
@@ -160,17 +208,288 @@ function dropOriginal() {
   original = { photo: null, promise: null };
 }
 
+// ---------- Линии: режим деления ----------
+
+const ICON_DRAG = {
+  h: '<svg viewBox="0 0 24 24"><path d="M12 4v16M8 8l4-4 4 4M8 16l4 4 4-4"/></svg>',
+  v: '<svg viewBox="0 0 24 24"><path d="M4 12h16M8 8l-4 4 4 4M16 8l4 4-4 4"/></svg>',
+};
+const ICON_TRIM = '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>';
+const ICON_ADD = '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
+const ICON_PHOTO = '<svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="2.5"/><circle cx="9" cy="9" r="1.8"/><path d="m20.5 15-3.6-3.6a1.8 1.8 0 0 0-2.5 0L6 19.8"/></svg>';
+const ICON_DELETE = '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M5.5 7l1 12a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>';
+const HANDLE_INSET = 22;
+const TRIM_OFFSET = 26;
+// Насколько близко (в точках экрана) линия прилипает к центру.
+const SNAP_PX = 10;
+// Палец при тапе всегда чуть сдвигается; меньше этого — тап, а не перетаскивание.
+const TAP_SLOP = 10;
+// Минимальное расстояние между центрами кнопки фото и кнопок линий.
+const PICK_CLEARANCE = 44;
+
+// Точка на линии l: t — доля вдоль линии.
+function linePoint(l, t) {
+  return l.dir === 'h'
+    ? { x: t * frameSize.w, y: l.pos * frameSize.h }
+    : { x: l.pos * frameSize.w, y: t * frameSize.h };
+}
+
+const at = ({ x, y }) => `left:${x}px;top:${y}px`;
+
+function renderOverlay() {
+  frameEl.toggleAttribute('data-edit', !!editMode);
+  layer.hidden = !editMode;
+  // Вне режима линий от них остаётся только удаление.
+  delLayer.innerHTML = editMode ? '' : state.lines.map((l) =>
+    `<button class="line-del" type="button" data-line="${l.id}" aria-label="Удалить линию" style="${at(deletePoint(l))}">${ICON_DELETE}</button>`).join('');
+  if (!editMode) return;
+  const parts = [];
+  // Центры кнопок на линиях — чтобы кнопки фото их обходили.
+  const taken = [];
+  const snap = drag?.snap;
+  if (snap?.frame) {
+    const l = drag.line;
+    const size = l.dir === 'h' ? `width:${frameSize.w}px` : `height:${frameSize.h}px`;
+    parts.push(`<div class="guide guide-${l.dir}" style="${at(linePoint(l, 0))};${size}"></div>`);
+  }
+  for (const l of state.lines) {
+    const [s, e] = extent(state.lines, l);
+    const len = (e - s) * (l.dir === 'h' ? frameSize.w : frameSize.h);
+    const sel = (l.id === selected ? ' sel' : '') + (snap && drag.line === l ? ' snap' : '');
+    const p0 = linePoint(l, s);
+    const size = l.dir === 'h' ? `width:${len}px` : `height:${len}px`;
+    parts.push(`<div class="seg seg-${l.dir}${sel}" data-line="${l.id}" style="${at(p0)};${size}"></div>`);
+    // Ручки чуть внутри от концов, чтобы не наезжать на края фрейма и соседние линии.
+    const inset = Math.min(HANDLE_INSET, len / 4) / (len || 1);
+    const ts = len > 4 * HANDLE_INSET ? [s + (e - s) * inset, e - (e - s) * inset] : [(s + e) / 2];
+    for (const t of ts) {
+      const p = linePoint(l, t);
+      taken.push(p);
+      parts.push(`<div class="handle${sel}" data-line="${l.id}" style="${at(p)}">${ICON_DRAG[l.dir]}</div>`);
+    }
+  }
+  const l = state.lines.find((m) => m.id === selected);
+  if (l) parts.push(...selectionControls(l, taken));
+  // Фото можно добавить и в режиме линий — кнопкой в ячейке. Кнопки фото идут первыми, под линиями.
+  const picks = faces.map((f, i) => {
+    const label = state.photos[i] ? 'Заменить фото' : 'Добавить фото';
+    return `<button class="cell-pick" type="button" data-cell="${i}" aria-label="${label}" style="${at(pickPoint(f, taken))}">${state.photos[i] ? ICON_PHOTO : ICON_ADD}</button>`;
+  });
+  layer.innerHTML = picks.join('') + parts.join('');
+}
+
+// Центр ячейки, а если там уже кнопка линии — сдвиг вдоль длинной стороны ячейки.
+function pickPoint(f, taken) {
+  const x0 = f.x0 * frameSize.w, x1 = f.x1 * frameSize.w;
+  const y0 = f.y0 * frameSize.h, y1 = f.y1 * frameSize.h;
+  const c = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+  const free = (p) => taken.every((q) => Math.hypot(p.x - q.x, p.y - q.y) >= PICK_CLEARANCE);
+  const tall = y1 - y0 >= x1 - x0;
+  for (const k of [0, 1, -1, 2, -2]) {
+    const d = k * PICK_CLEARANCE;
+    const p = tall ? { x: c.x, y: c.y + d } : { x: c.x + d, y: c.y };
+    const inside = p.x > x0 + 20 && p.x < x1 - 20 && p.y > y0 + 20 && p.y < y1 - 20;
+    if ((inside || k === 0) && free(p)) return p;
+  }
+  return c;
+}
+
+// У выделенной линии: ножницы на плечах у каждого пересечения и кнопка удаления.
+function selectionControls(l, taken) {
+  const [s, e] = extent(state.lines, l);
+  const px = l.dir === 'h' ? frameSize.w : frameSize.h;
+  const cross = crossings(state.lines, l);
+  const stops = [s, ...cross.map((m) => m.pos), e];
+  const parts = [];
+  cross.forEach((m, k) => {
+    const before = (m.pos - stops[k]) * px;
+    const after = (stops[k + 2] - m.pos) * px;
+    const pb = linePoint(l, m.pos - Math.min(TRIM_OFFSET, before / 2) / px);
+    const pa = linePoint(l, m.pos + Math.min(TRIM_OFFSET, after / 2) / px);
+    taken.push(pb, pa);
+    parts.push(`<button class="trim" type="button" data-line="${l.id}" data-cross="${m.id}" data-end="a" aria-label="Отрезать до пересечения" style="${at(pb)}">${ICON_TRIM}</button>`);
+    parts.push(`<button class="trim" type="button" data-line="${l.id}" data-cross="${m.id}" data-end="b" aria-label="Отрезать после пересечения" style="${at(pa)}">${ICON_TRIM}</button>`);
+  });
+  const pd = deletePoint(l);
+  taken.push(pd);
+  parts.push(`<button class="del" type="button" data-line="${l.id}" aria-label="Удалить линию" style="${at(pd)}">${ICON_DELETE}</button>`);
+  return parts;
+}
+
+// Кнопка удаления — посередине самого длинного куска линии, свободного от пересечений и примыканий.
+function deletePoint(l) {
+  const [s, e] = extent(state.lines, l);
+  const touching = [...crossings(state.lines, l), ...junctions(state.lines, l)].map((m) => m.pos);
+  const points = [...new Set([s, ...touching, e])].sort((p, q) => p - q);
+  let best = [points[0], points[1]];
+  for (let k = 2; k < points.length; k++) {
+    if (points[k] - points[k - 1] > best[1] - best[0]) best = [points[k - 1], points[k]];
+  }
+  return linePoint(l, (best[0] + best[1]) / 2);
+}
+
+function setEditMode(mode) {
+  editMode = mode;
+  if (!mode) selected = null;
+  syncChoices();
+  // Первая линия ставится сама, по центру.
+  if (mode && !state.lines.length) {
+    const { lines, id } = addLine([], mode, 0.5);
+    selected = id;
+    setLines(lines);
+    commit();
+    toast('Тяни линию за ручки, тап по фрейму добавит ещё');
+    return;
+  }
+  renderOverlay();
+  if (mode) {
+    const add = mode === 'h' ? 'Тап по фрейму — новая горизонтальная линия' : 'Тап по фрейму — новая вертикальная линия';
+    toast(`${add}. Тап по линии — обрезать или удалить`);
+  }
+}
+
+let drag = null;
+
+const layerPoint = (e) => {
+  const b = layer.getBoundingClientRect();
+  return { x: e.clientX - b.left, y: e.clientY - b.top };
+};
+
+layer.addEventListener('pointerdown', (e) => {
+  if (drag || e.target.closest('.trim, .del, .cell-pick')) return;
+  layer.setPointerCapture(e.pointerId);
+  const id = e.target.closest('[data-line]')?.dataset.line ?? null;
+  const line = state.lines.find((l) => l.id === id);
+  drag = {
+    pointerId: e.pointerId,
+    start: layerPoint(e),
+    moved: false,
+    line,
+    startPos: line?.pos,
+    range: line ? dragRange(state.lines, faces, line) : null,
+    snaps: line ? snapTargets(line) : [],
+    snap: null,
+  };
+});
+
+// Центр всего фрейма и центр части, которую линия делит.
+function snapTargets(l) {
+  const [lo, hi] = dividedSpan(state.lines, faces, l);
+  const [min, max] = dragRange(state.lines, faces, l);
+  const targets = [{ pos: 0.5, frame: true }];
+  if (Math.abs((lo + hi) / 2 - 0.5) > 1e-9) targets.push({ pos: (lo + hi) / 2, frame: false });
+  return targets.filter((t) => t.pos >= min && t.pos <= max);
+}
+
+layer.addEventListener('pointermove', (e) => {
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  const p = layerPoint(e);
+  const dx = p.x - drag.start.x;
+  const dy = p.y - drag.start.y;
+  if (!drag.moved && Math.hypot(dx, dy) > TAP_SLOP) drag.moved = true;
+  if (!drag.moved || !drag.line) return;
+  const l = drag.line;
+  const delta = l.dir === 'h' ? dy / frameSize.h : dx / frameSize.w;
+  const [min, max] = drag.range;
+  const px = l.dir === 'h' ? frameSize.h : frameSize.w;
+  let pos = Math.min(max, Math.max(min, drag.startPos + delta));
+  drag.snap = null;
+  for (const t of drag.snaps) {
+    const d = Math.abs(pos - t.pos) * px;
+    if (d < SNAP_PX && (!drag.snap || d < Math.abs(pos - drag.snap.pos) * px)) drag.snap = t;
+  }
+  if (drag.snap) pos = drag.snap.pos;
+  l.pos = pos;
+  const nextFaces = computeFaces(state.lines);
+  state.photos = remapPhotos(faces, state.photos, nextFaces);
+  faces = nextFaces;
+  requestLayout();
+});
+
+const endDrag = (e) => {
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  const d = drag;
+  drag = null;
+  if (d.moved) {
+    if (d.line) {
+      // Потянутая линия становится выделенной — сразу видны ножницы и удаление.
+      selected = d.line.id;
+      renderOverlay();
+      commit();
+    }
+    return;
+  }
+  if (d.line) {
+    selected = selected === d.line.id ? null : d.line.id;
+    renderOverlay();
+  } else {
+    placeLine(d.start);
+  }
+};
+layer.addEventListener('pointerup', endDrag);
+layer.addEventListener('pointercancel', (e) => {
+  if (drag?.pointerId === e.pointerId) {
+    const d = drag;
+    drag = null;
+    if (d.moved && d.line) {
+      renderOverlay();
+      commit();
+    }
+  }
+});
+
+// Новая линия идёт через весь фрейм; лишнее потом отрезается ножницами на пересечениях.
+function placeLine(p) {
+  const fx = p.x / frameSize.w;
+  const fy = p.y / frameSize.h;
+  const [lo, hi, px] = editMode === 'h' ? ['y0', 'y1', frameSize.h] : ['x0', 'x1', frameSize.w];
+  let pos = editMode === 'h' ? fy : fx;
+  // Прилипает к центру ячейки, по которой тапнули, и к центру фрейма.
+  const face = faces.find((f) => fx >= f.x0 && fx <= f.x1 && fy >= f.y0 && fy <= f.y1);
+  const targets = [0.5, ...(face ? [(face[lo] + face[hi]) / 2] : [])];
+  const near = targets.filter((t) => Math.abs(t - pos) * px < SNAP_PX * 2).sort((a, b) => Math.abs(a - pos) - Math.abs(b - pos));
+  if (near.length) pos = near[0];
+  const { lines, id } = addLine(state.lines, editMode, pos);
+  if (!facesOk(computeFaces(lines))) {
+    toast('Слишком близко к краю или к другой линии');
+    return;
+  }
+  selected = id;
+  setLines(lines);
+  commit();
+}
+
+layer.addEventListener('click', (e) => {
+  const pick = e.target.closest('.cell-pick');
+  if (pick) {
+    openPicker(Number(pick.dataset.cell));
+    return;
+  }
+  const b = e.target.closest('.trim, .del');
+  if (!b) return;
+  const { line, cross, end } = b.dataset;
+  setLines(b.classList.contains('del') ? removeLine(state.lines, line) : trimLine(state.lines, line, cross, end));
+  commit();
+});
+
+delLayer.addEventListener('click', (e) => {
+  const b = e.target.closest('.line-del');
+  if (!b) return;
+  setLines(removeLine(state.lines, b.dataset.line));
+  commit();
+});
+
 // ---------- История: отмена и возврат ----------
 
-// Снимок — формат, деление и что лежит в каждой ячейке. Сами фото не копируются, только ссылки на них.
+// Снимок — формат, линии и что лежит в каждой ячейке. Сами фото не копируются, только ссылки на них.
 const history = { undo: [], redo: [], current: null };
 const knownPhotos = new Set();
 
 function snapshot() {
   return {
     frame: state.frame,
-    layout: state.layout,
-    cells: LAYOUTS[state.layout].map((_, i) => {
+    lines: cloneLines(state.lines),
+    cells: faces.map((_, i) => {
       const p = state.photos[i];
       return p ? { photo: p, rot: p.rot, view: { ...p.view } } : null;
     }),
@@ -178,7 +497,8 @@ function snapshot() {
 }
 
 function sameSnapshot(a, b) {
-  return a.frame === b.frame && a.layout === b.layout && a.cells.length === b.cells.length
+  return a.frame === b.frame && JSON.stringify(a.lines) === JSON.stringify(b.lines)
+    && a.cells.length === b.cells.length
     && a.cells.every((x, i) => {
       const y = b.cells[i];
       if (!x || !y) return x === y;
@@ -204,13 +524,15 @@ function step(from, to) {
   history.current = from.pop();
   const snap = history.current;
   state.frame = snap.frame;
-  state.layout = snap.layout;
+  state.lines = cloneLines(snap.lines);
+  faces = computeFaces(state.lines);
   state.photos = snap.cells.map((c) => {
     if (!c) return undefined;
     c.photo.rot = c.rot;
     c.photo.view = { ...c.view };
     return c.photo;
   });
+  selected = null;
   syncChoices();
   layoutFrame();
   collectPhotos();
@@ -246,13 +568,14 @@ undoBtn.addEventListener('click', () => step(history.undo, history.redo));
 redoBtn.addEventListener('click', () => step(history.redo, history.undo));
 
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && editMode) setEditMode(null);
   if (!(e.ctrlKey || e.metaKey) || e.code !== 'KeyZ') return;
   e.preventDefault();
   if (e.shiftKey) step(history.redo, history.undo);
   else step(history.undo, history.redo);
 });
 
-// ---------- Жесты ----------
+// ---------- Жесты с фото ----------
 
 function attachGestures(c, i) {
   const pts = new Map();
@@ -364,24 +687,28 @@ picker.addEventListener('change', async () => {
   const i = pickTarget;
   picker.value = '';
   if (!file || !cells[i]) return;
-  cells[i].el.setAttribute('data-busy', '');
+  const cell = cells[i];
+  cell.el.setAttribute('data-busy', '');
   dropOriginal();
   try {
     const photo = await loadPhoto(file);
+    // Пока фото грузилось, ячейки могли поменяться — тогда вставлять уже некуда.
+    if (cells[i] !== cell) return;
     knownPhotos.add(photo);
     state.photos[i] = photo;
     renderCell(i);
+    renderOverlay();
     schedulePatch(i, 0);
     commit();
   } catch (e) {
     console.error(e);
     toast('Не удалось открыть фото');
   } finally {
-    cells[i]?.el.removeAttribute('data-busy');
+    cell.el.removeAttribute('data-busy');
   }
 });
 
-// ---------- Формат и раскладка ----------
+// ---------- Формат и инструменты ----------
 
 function resetViews() {
   state.photos.forEach((p) => {
@@ -392,24 +719,22 @@ function resetViews() {
   });
 }
 
-const choices = [...document.querySelectorAll('[data-frame], [data-layout]')];
-
 function syncChoices() {
-  choices.forEach((b) => {
-    const on = b.dataset.frame ? b.dataset.frame === state.frame : b.dataset.layout === state.layout;
-    b.setAttribute('aria-pressed', String(on));
-  });
+  document.querySelectorAll('[data-frame]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.frame === state.frame)));
+  document.querySelectorAll('[data-tool]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === editMode)));
 }
 
-choices.forEach((b) => b.addEventListener('click', () => {
-  const key = b.dataset.frame ? 'frame' : 'layout';
-  const value = b.dataset[key];
-  if (state[key] === value) return;
-  state[key] = value;
-  syncChoices();
+document.querySelectorAll('[data-frame]').forEach((b) => b.addEventListener('click', () => {
+  if (state.frame === b.dataset.frame) return;
+  state.frame = b.dataset.frame;
   resetViews();
+  syncChoices();
   layoutFrame();
   commit();
+}));
+
+document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => {
+  setEditMode(editMode === b.dataset.tool ? null : b.dataset.tool);
 }));
 
 // ---------- Сохранение ----------
@@ -418,7 +743,7 @@ async function renderCollage() {
   const f = FRAMES[state.frame];
   const out = makeCanvas(f.w, f.h);
   const ctx = ctx2d(out);
-  const rects = cellRects(f.w, f.h);
+  const rects = faceRects(f.w, f.h);
   for (let i = 0; i < rects.length; i++) {
     const r = rects[i];
     const p = state.photos[i];
@@ -440,10 +765,11 @@ function fileName() {
 const canShare = (file) => matchMedia('(pointer: coarse)').matches && navigator.canShare?.({ files: [file] });
 
 saveBtn.addEventListener('click', async () => {
-  if (cells.some((_, i) => !state.photos[i])) {
+  if (faces.some((_, i) => !state.photos[i])) {
     toast('Добавь фото во все части');
     return;
   }
+  if (editMode) setEditMode(null);
   saveBtn.disabled = true;
   saveBtn.textContent = 'Готовлю…';
   try {
@@ -508,7 +834,7 @@ function toast(text) {
   el.textContent = text;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
+  toastTimer = setTimeout(() => el.classList.remove('show'), Math.max(2400, text.length * 50));
 }
 
 // Не даём Safari масштабировать всю страницу щипком.

@@ -7,6 +7,7 @@
   --muted: #9a9aa3;
   --accent: #ff7a45;
   --on-accent: #1d0e06;
+  --snap: #ffd84d;
   --rail: 60px;
   color-scheme: dark;
 }
@@ -102,6 +103,11 @@ svg {
   touch-action: none;
 }
 
+.cells {
+  position: absolute;
+  inset: 0;
+}
+
 .cell {
   position: absolute;
   overflow: hidden;
@@ -145,6 +151,13 @@ svg {
   gap: 8px;
 }
 
+/* В узкой ячейке кнопки встают столбиком. */
+.cell[data-narrow] .cell-tools {
+  flex-direction: column;
+  top: 6px;
+  right: 6px;
+}
+
 .cell-tool {
   width: 34px;
   height: 34px;
@@ -182,6 +195,143 @@ svg {
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- Режим линий ---------- */
+
+.frame[data-edit] .cell-tools { display: none; }
+
+/* В режиме линий «+ Фото» заменяет кнопка поверх слоя линий. */
+.frame[data-edit] .cell-empty > * { visibility: hidden; }
+
+.cell-pick {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  margin: -20px 0 0 -20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.cell-pick svg { width: 20px; height: 20px; pointer-events: none; }
+
+/* Удаление линий в обычном режиме — в стиле кнопок ячейки. */
+.line-dels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.line-del {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  margin: -15px 0 0 -15px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+}
+
+.line-del svg { width: 16px; height: 16px; }
+
+.edit-layer {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+/* Линия видна тонкой, а ловится полосой пошире. */
+.seg {
+  position: absolute;
+  cursor: grab;
+}
+
+.seg-h { height: 32px; transform: translateY(-50%); }
+.seg-v { width: 32px; transform: translateX(-50%); }
+
+.seg::before {
+  content: "";
+  position: absolute;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.seg-h::before { left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px; }
+.seg-v::before { top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; }
+.seg.sel::before { background: var(--accent); }
+
+/* Линия прилипла к центру. */
+.seg.snap::before { background: var(--snap); }
+.seg-h.snap::before { height: 3px; margin-top: -1.5px; }
+.seg-v.snap::before { width: 3px; margin-left: -1.5px; }
+
+.guide {
+  position: absolute;
+  pointer-events: none;
+}
+
+.guide-h { border-top: 1.5px dashed var(--snap); transform: translateY(-50%); }
+.guide-v { border-left: 1.5px dashed var(--snap); transform: translateX(-50%); }
+
+.handle,
+.trim,
+.del {
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  margin: -16px 0 0 -16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.handle {
+  background: #fff;
+  color: #111;
+  cursor: grab;
+}
+
+.handle.sel {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.trim {
+  background: rgba(18, 18, 20, 0.9);
+  color: #fff;
+  box-shadow: 0 0 0 1.5px var(--accent), 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.del {
+  background: #e5484d;
+  color: #fff;
+}
+
+.handle svg,
+.trim svg,
+.del svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2;
+  pointer-events: none;
+}
 
 .bottom {
   grid-column: 1 / -1;

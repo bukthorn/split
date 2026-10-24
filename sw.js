@@ -1,12 +1,13 @@
 // Кэширует приложение, чтобы оно открывалось без интернета.
 // Отдаём из кэша сразу, а свежую версию тихо подтягиваем на следующий запуск.
-const CACHE = 'split-v2';
+const CACHE = 'split-v3';
 const ASSETS = [
   './',
   'index.html',
   'styles.css',
   'app.js',
   'imaging.js',
+  'layout.js',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png',
