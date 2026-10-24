@@ -198,6 +198,18 @@ svg {
 
 /* ---------- Режим линий ---------- */
 
+.rail-sep {
+  width: 28px;
+  height: 1px;
+  background: var(--line);
+}
+
+/* Предпросмотр: только сам коллаж — ни кнопок, ни жестов. */
+.frame[data-preview] .cell { pointer-events: none; }
+.frame[data-preview] .cell-tools,
+.frame[data-preview] .line-dels { display: none; }
+.frame[data-preview] .cell-empty > * { visibility: hidden; }
+
 .frame[data-edit] .cell-tools { display: none; }
 
 /* В режиме линий «+ Фото» заменяет кнопка поверх слоя линий. */

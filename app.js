@@ -15,6 +15,8 @@ const state = { frame: 'story', lines: [], photos: [] };
 let faces = computeFaces(state.lines);
 // Режим линий: null — обычный, 'h' / 'v' — тап по фрейму проводит линию.
 let editMode = null;
+// Предпросмотр: прячем все кнопки и не реагируем на жесты.
+let preview = false;
 let selected = null;
 // Ячейки на экране: размеры в CSS-пикселях (w, h) и в пикселях устройства (dw, dh).
 let cells = [];
@@ -215,6 +217,7 @@ const ICON_DRAG = {
   v: '<svg viewBox="0 0 24 24"><path d="M4 12h16M8 8l-4 4 4 4M16 8l4 4-4 4"/></svg>',
 };
 const ICON_TRIM = '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>';
+const ICON_ROTATE = '<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-8-8c2.24 0 4.38.9 5.99 2.44L20 8.4"/><path d="M20 3.5v4.9h-4.9"/></svg>';
 const ICON_ADD = '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
 const ICON_PHOTO = '<svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="2.5"/><circle cx="9" cy="9" r="1.8"/><path d="m20.5 15-3.6-3.6a1.8 1.8 0 0 0-2.5 0L6 19.8"/></svg>';
 const ICON_DELETE = '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M5.5 7l1 12a2 2 0 0 0 2 2h7a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>';
@@ -270,26 +273,39 @@ function renderOverlay() {
   }
   const l = state.lines.find((m) => m.id === selected);
   if (l) parts.push(...selectionControls(l, taken));
-  // Фото можно добавить и в режиме линий — кнопкой в ячейке. Кнопки фото идут первыми, под линиями.
-  const picks = faces.map((f, i) => {
-    const label = state.photos[i] ? 'Заменить фото' : 'Добавить фото';
-    return `<button class="cell-pick" type="button" data-cell="${i}" aria-label="${label}" style="${at(pickPoint(f, taken))}">${state.photos[i] ? ICON_PHOTO : ICON_ADD}</button>`;
+  // Кнопки ячеек работают и в режиме линий: у пустой — добавить фото, у заполненной — повернуть и заменить.
+  // Идут первыми, чтобы линии и их кнопки лежали поверх.
+  const picks = faces.flatMap((f, i) => {
+    const icons = state.photos[i]
+      ? [['rotate', 'Повернуть на 90°', ICON_ROTATE], ['photo', 'Заменить фото', ICON_PHOTO]]
+      : [['photo', 'Добавить фото', ICON_ADD]];
+    const narrow = (f.x1 - f.x0) * frameSize.w < 2 * PICK_CLEARANCE + 16;
+    const step = PICK_CLEARANCE / 2;
+    const offsets = icons.length === 1 ? [{ x: 0, y: 0 }]
+      : narrow ? [{ x: 0, y: -step }, { x: 0, y: step }] : [{ x: -step, y: 0 }, { x: step, y: 0 }];
+    const c = pickPoint(f, taken, offsets);
+    return icons.map(([act, label, icon], k) => {
+      const p = { x: c.x + offsets[k].x, y: c.y + offsets[k].y };
+      return `<button class="cell-pick" type="button" data-cell="${i}" data-act="${act}" aria-label="${label}" style="${at(p)}">${icon}</button>`;
+    });
   });
   layer.innerHTML = picks.join('') + parts.join('');
 }
 
-// Центр ячейки, а если там уже кнопка линии — сдвиг вдоль длинной стороны ячейки.
-function pickPoint(f, taken) {
+// Центр ячейки, а если там уже кнопки линий — сдвиг вдоль длинной стороны ячейки.
+// offsets — где стоят кнопки группы относительно её центра.
+function pickPoint(f, taken, offsets) {
   const x0 = f.x0 * frameSize.w, x1 = f.x1 * frameSize.w;
   const y0 = f.y0 * frameSize.h, y1 = f.y1 * frameSize.h;
   const c = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
-  const free = (p) => taken.every((q) => Math.hypot(p.x - q.x, p.y - q.y) >= PICK_CLEARANCE);
   const tall = y1 - y0 >= x1 - x0;
-  for (const k of [0, 1, -1, 2, -2]) {
+  for (const k of [0, 1, -1, 2, -2, 3, -3]) {
     const d = k * PICK_CLEARANCE;
-    const p = tall ? { x: c.x, y: c.y + d } : { x: c.x + d, y: c.y };
-    const inside = p.x > x0 + 20 && p.x < x1 - 20 && p.y > y0 + 20 && p.y < y1 - 20;
-    if ((inside || k === 0) && free(p)) return p;
+    const base = tall ? { x: c.x, y: c.y + d } : { x: c.x + d, y: c.y };
+    const pts = offsets.map((o) => ({ x: base.x + o.x, y: base.y + o.y }));
+    const inside = pts.every((p) => p.x > x0 + 20 && p.x < x1 - 20 && p.y > y0 + 20 && p.y < y1 - 20);
+    const free = pts.every((p) => taken.every((q) => Math.hypot(p.x - q.x, p.y - q.y) >= PICK_CLEARANCE));
+    if (inside && free) return base;
   }
   return c;
 }
@@ -328,7 +344,18 @@ function deletePoint(l) {
   return linePoint(l, (best[0] + best[1]) / 2);
 }
 
+function setPreview(on) {
+  preview = on;
+  frameEl.toggleAttribute('data-preview', on);
+  if (on) $('#toast').classList.remove('show');
+  if (on && editMode) setEditMode(null);
+  else syncChoices();
+}
+
+$('#preview').addEventListener('click', () => setPreview(!preview));
+
 function setEditMode(mode) {
+  if (mode && preview) setPreview(false);
   editMode = mode;
   if (!mode) selected = null;
   syncChoices();
@@ -355,20 +382,44 @@ const layerPoint = (e) => {
   return { x: e.clientX - b.left, y: e.clientY - b.top };
 };
 
+const faceAt = (p) => faces.findIndex((f) =>
+  p.x >= f.x0 * frameSize.w && p.x <= f.x1 * frameSize.w && p.y >= f.y0 * frameSize.h && p.y <= f.y1 * frameSize.h);
+
+// Касание мимо линий: отпустили на месте — новая линия; повели или добавили палец — жест с фото.
+// Жест с фото начинается только после порога, чтобы дрожание пальца при тапе не двигало фото.
+function startPhotoGesture(d) {
+  if (d.gesture || !state.photos[d.cell]) return;
+  d.gesture = cells[d.cell].gesture;
+  for (const ev of d.pointers.values()) d.gesture.down(ev);
+}
+
 layer.addEventListener('pointerdown', (e) => {
-  if (drag || e.target.closest('.trim, .del, .cell-pick')) return;
+  if (e.target.closest('.trim, .del, .cell-pick')) return;
+  if (drag && !drag.line) {
+    layer.setPointerCapture(e.pointerId);
+    drag.pointers.set(e.pointerId, e);
+    drag.moved = true;
+    if (drag.gesture) drag.gesture.down(e);
+    else startPhotoGesture(drag);
+    return;
+  }
+  if (drag) return;
   layer.setPointerCapture(e.pointerId);
   const id = e.target.closest('[data-line]')?.dataset.line ?? null;
   const line = state.lines.find((l) => l.id === id);
+  const start = layerPoint(e);
   drag = {
     pointerId: e.pointerId,
-    start: layerPoint(e),
+    pointers: new Map([[e.pointerId, e]]),
+    start,
     moved: false,
     line,
     startPos: line?.pos,
     range: line ? dragRange(state.lines, faces, line) : null,
     snaps: line ? snapTargets(line) : [],
     snap: null,
+    cell: line ? -1 : faceAt(start),
+    gesture: null,
   };
 });
 
@@ -382,12 +433,22 @@ function snapTargets(l) {
 }
 
 layer.addEventListener('pointermove', (e) => {
-  if (!drag || e.pointerId !== drag.pointerId) return;
+  if (!drag || !drag.pointers.has(e.pointerId)) return;
+  drag.pointers.set(e.pointerId, e);
   const p = layerPoint(e);
   const dx = p.x - drag.start.x;
   const dy = p.y - drag.start.y;
+  if (!drag.line) {
+    if (drag.gesture) drag.gesture.move(e);
+    else if (Math.hypot(dx, dy) > TAP_SLOP) {
+      drag.moved = true;
+      startPhotoGesture(drag);
+    }
+    return;
+  }
+  if (e.pointerId !== drag.pointerId) return;
   if (!drag.moved && Math.hypot(dx, dy) > TAP_SLOP) drag.moved = true;
-  if (!drag.moved || !drag.line) return;
+  if (!drag.moved) return;
   const l = drag.line;
   const delta = l.dir === 'h' ? dy / frameSize.h : dx / frameSize.w;
   const [min, max] = drag.range;
@@ -406,8 +467,11 @@ layer.addEventListener('pointermove', (e) => {
   requestLayout();
 });
 
-const endDrag = (e) => {
-  if (!drag || e.pointerId !== drag.pointerId) return;
+const endDrag = (e, cancelled) => {
+  if (!drag || !drag.pointers.has(e.pointerId)) return;
+  drag.pointers.delete(e.pointerId);
+  drag.gesture?.up(e);
+  if (drag.pointers.size) return;
   const d = drag;
   drag = null;
   if (d.moved) {
@@ -419,6 +483,7 @@ const endDrag = (e) => {
     }
     return;
   }
+  if (cancelled) return;
   if (d.line) {
     selected = selected === d.line.id ? null : d.line.id;
     renderOverlay();
@@ -426,17 +491,15 @@ const endDrag = (e) => {
     placeLine(d.start);
   }
 };
-layer.addEventListener('pointerup', endDrag);
-layer.addEventListener('pointercancel', (e) => {
-  if (drag?.pointerId === e.pointerId) {
-    const d = drag;
-    drag = null;
-    if (d.moved && d.line) {
-      renderOverlay();
-      commit();
-    }
-  }
-});
+layer.addEventListener('pointerup', (e) => endDrag(e, false));
+layer.addEventListener('pointercancel', (e) => endDrag(e, true));
+
+layer.addEventListener('wheel', (e) => {
+  const i = faceAt(layerPoint(e));
+  if (i < 0 || !state.photos[i]) return;
+  e.preventDefault();
+  cells[i].gesture.wheel(e);
+}, { passive: false });
 
 // Новая линия идёт через весь фрейм; лишнее потом отрезается ножницами на пересечениях.
 function placeLine(p) {
@@ -462,7 +525,9 @@ function placeLine(p) {
 layer.addEventListener('click', (e) => {
   const pick = e.target.closest('.cell-pick');
   if (pick) {
-    openPicker(Number(pick.dataset.cell));
+    const i = Number(pick.dataset.cell);
+    if (pick.dataset.act === 'rotate') rotate(i);
+    else openPicker(i);
     return;
   }
   const b = e.target.closest('.trim, .del');
@@ -577,10 +642,10 @@ document.addEventListener('keydown', (e) => {
 
 // ---------- Жесты с фото ----------
 
-function attachGestures(c, i) {
+// Сдвиг одним пальцем и щипок двумя. События приходят либо от самой ячейки,
+// либо от слоя линий — координаты считаются от ячейки по clientX/clientY.
+function makeGesture(c, i) {
   const pts = new Map();
-  let moved = false;
-  let origin = null;
   let wheelTimer;
   const local = (e) => {
     const b = c.el.getBoundingClientRect();
@@ -589,60 +654,76 @@ function attachGestures(c, i) {
   const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
   const dist = (a, b) => Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
 
+  return {
+    moved: false,
+    origin: null,
+    has: (id) => pts.has(id),
+    down(e) {
+      const pt = local(e);
+      pts.set(e.pointerId, pt);
+      if (pts.size === 1) {
+        this.moved = false;
+        this.origin = pt;
+      }
+      clearTimeout(patchTimers.get(i));
+    },
+    move(e) {
+      if (!pts.has(e.pointerId) || !state.photos[i]) return;
+      const prev = [...pts.values()];
+      const cur = local(e);
+      pts.set(e.pointerId, cur);
+      if (Math.hypot(cur.x - this.origin.x, cur.y - this.origin.y) > 4) this.moved = true;
+      if (pts.size === 1) {
+        transform(i, prev[0], cur, 1);
+      } else {
+        const next = [...pts.values()];
+        transform(i, mid(prev[0], prev[1]), mid(next[0], next[1]), dist(next[0], next[1]) / dist(prev[0], prev[1]));
+      }
+    },
+    // Один жест — от первого касания до последнего отпущенного пальца — один шаг истории.
+    up(e) {
+      if (pts.delete(e.pointerId) && pts.size === 0) {
+        schedulePatch(i);
+        commit();
+      }
+    },
+    // Колёсико — для проверки на компьютере.
+    wheel(e) {
+      const m = local(e);
+      transform(i, m, m, Math.exp(-e.deltaY * 0.0015));
+      schedulePatch(i);
+      clearTimeout(wheelTimer);
+      wheelTimer = setTimeout(commit, 400);
+    },
+  };
+}
+
+function attachGestures(c, i) {
+  const g = makeGesture(c, i);
+  c.gesture = g;
+
   c.el.addEventListener('pointerdown', (e) => {
     if (!state.photos[i] || e.target.closest('.cell-tools')) return;
     c.el.setPointerCapture(e.pointerId);
-    const pt = local(e);
-    pts.set(e.pointerId, pt);
-    if (pts.size === 1) {
-      moved = false;
-      origin = pt;
-    }
-    clearTimeout(patchTimers.get(i));
+    g.down(e);
   });
-
-  c.el.addEventListener('pointermove', (e) => {
-    if (!pts.has(e.pointerId)) return;
-    const prev = [...pts.values()];
-    const cur = local(e);
-    pts.set(e.pointerId, cur);
-    if (Math.hypot(cur.x - origin.x, cur.y - origin.y) > 4) moved = true;
-    if (pts.size === 1) {
-      transform(i, prev[0], cur, 1);
-    } else {
-      const next = [...pts.values()];
-      transform(i, mid(prev[0], prev[1]), mid(next[0], next[1]), dist(next[0], next[1]) / dist(prev[0], prev[1]));
-    }
-  });
-
-  // Один жест — от первого касания до последнего отпущенного пальца — один шаг истории.
-  const end = (e) => {
-    if (pts.delete(e.pointerId) && pts.size === 0) {
-      schedulePatch(i);
-      commit();
-    }
-  };
-  c.el.addEventListener('pointerup', end);
-  c.el.addEventListener('pointercancel', end);
+  c.el.addEventListener('pointermove', (e) => g.move(e));
+  c.el.addEventListener('pointerup', (e) => g.up(e));
+  c.el.addEventListener('pointercancel', (e) => g.up(e));
 
   c.el.addEventListener('click', (e) => {
     if (e.target.closest('.cell-tools')) return;
-    if (moved) {
-      moved = false;
+    if (g.moved) {
+      g.moved = false;
       return;
     }
     if (!state.photos[i]) openPicker(i);
   });
 
-  // Колёсико — для проверки на компьютере.
   c.el.addEventListener('wheel', (e) => {
     if (!state.photos[i]) return;
     e.preventDefault();
-    const m = local(e);
-    transform(i, m, m, Math.exp(-e.deltaY * 0.0015));
-    schedulePatch(i);
-    clearTimeout(wheelTimer);
-    wheelTimer = setTimeout(commit, 400);
+    g.wheel(e);
   }, { passive: false });
 }
 
@@ -722,6 +803,7 @@ function resetViews() {
 function syncChoices() {
   document.querySelectorAll('[data-frame]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.frame === state.frame)));
   document.querySelectorAll('[data-tool]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === editMode)));
+  $('#preview').setAttribute('aria-pressed', String(preview));
 }
 
 document.querySelectorAll('[data-frame]').forEach((b) => b.addEventListener('click', () => {
