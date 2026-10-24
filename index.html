@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0e0e10">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Сплит">
+  <title>Сплит</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <main class="app">
+    <nav class="rail rail-left" aria-label="Формат">
+      <button class="tool" type="button" data-frame="story" aria-label="Сторис 9:16">
+        <svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2"/></svg>
+        <span>Сторис</span>
+      </button>
+      <button class="tool" type="button" data-frame="post" aria-label="Пост 4:5">
+        <svg viewBox="0 0 24 24"><rect x="4.5" y="2.6" width="15" height="18.8" rx="2"/></svg>
+        <span>Пост</span>
+      </button>
+    </nav>
+
+    <section class="stage" id="stage">
+      <div class="frame" id="frame"></div>
+    </section>
+
+    <nav class="rail rail-right" aria-label="Разделение">
+      <button class="tool" type="button" data-layout="cols" aria-label="Две части рядом">
+        <svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M12 3v18"/></svg>
+        <span>1 | 1</span>
+      </button>
+      <button class="tool" type="button" data-layout="rows" aria-label="Две части друг над другом">
+        <svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 12h16"/></svg>
+        <span>1 / 1</span>
+      </button>
+    </nav>
+
+    <footer class="bottom">
+      <button class="save" id="save" type="button">Сохранить</button>
+    </footer>
+  </main>
+
+  <input class="picker" id="picker" type="file" accept="image/*" tabindex="-1" aria-hidden="true">
+  <div class="toast" id="toast" role="status"></div>
+
+  <div class="sheet" id="sheet" hidden>
+    <div class="sheet-card">
+      <img id="sheet-img" alt="Готовый коллаж">
+      <p class="sheet-hint">Коллаж готов</p>
+      <div class="sheet-actions">
+        <button class="ghost" id="sheet-close" type="button">Закрыть</button>
+        <button class="save" id="sheet-save" type="button">Сохранить в Фото</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
