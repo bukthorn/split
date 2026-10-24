@@ -135,12 +135,17 @@ svg {
 
 .cell[data-empty] { cursor: pointer; }
 .cell[data-empty] .cell-empty { display: flex; }
-.cell[data-empty] .cell-replace { display: none; }
+.cell[data-empty] .cell-tools { display: none; }
 
-.cell-replace {
+.cell-tools {
   position: absolute;
   top: 8px;
   right: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.cell-tool {
   width: 34px;
   height: 34px;
   padding: 0;
@@ -154,7 +159,7 @@ svg {
   backdrop-filter: blur(8px);
 }
 
-.cell-replace svg { width: 18px; height: 18px; }
+.cell-tool svg { width: 18px; height: 18px; }
 
 .cell-busy {
   position: absolute;
@@ -181,12 +186,30 @@ svg {
 .bottom {
   grid-column: 1 / -1;
   display: flex;
+  align-items: center;
   justify-content: center;
+  gap: 12px;
   padding-top: 14px;
 }
 
+.round {
+  flex: none;
+  width: 50px;
+  height: 50px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.round svg { width: 22px; height: 22px; }
+.round:disabled { opacity: 0.35; }
+
 .save {
-  min-width: 200px;
+  min-width: 180px;
   height: 50px;
   padding: 0 28px;
   border: 0;

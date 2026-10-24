@@ -1,5 +1,5 @@
 // Сплит — коллажи для Instagram. Всё считается в браузере: фото не покидают устройство.
-import { ctx2d, decodeFile, disposePhoto, fitView, clampView, freeCanvas, loadPhoto, makeCanvas, paintCell } from './imaging.js';
+import { ctx2d, decodeFile, disposePhoto, fitView, clampView, freeCanvas, loadPhoto, makeCanvas, paintCell, photoSize } from './imaging.js';
 
 // Итоговые размеры — те, в которых Instagram показывает публикации.
 const FRAMES = {
@@ -13,6 +13,8 @@ const LAYOUTS = {
   rows: [[0, 0, 1, 0.5], [0, 0.5, 1, 0.5]],
 };
 
+const MAX_HISTORY = 50;
+
 const state = { frame: 'story', layout: 'cols', photos: [] };
 // Ячейки на экране: размеры в CSS-пикселях (w, h) и в пикселях устройства (dw, dh).
 let cells = [];
@@ -22,6 +24,8 @@ const stage = $('#stage');
 const frameEl = $('#frame');
 const picker = $('#picker');
 const saveBtn = $('#save');
+const undoBtn = $('#undo');
+const redoBtn = $('#redo');
 
 // ---------- Геометрия ----------
 
@@ -71,23 +75,28 @@ function buildCells(n) {
         <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
         <span>Фото</span>
       </div>
-      <button class="cell-replace" type="button" aria-label="Заменить фото">
-        <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8.7M20 4v4.7h-4.7M20 12a8 8 0 0 1-13.7 5.6L4 15.3M4 20v-4.7h4.7"/></svg>
-      </button>
+      <div class="cell-tools">
+        <button class="cell-tool" type="button" data-act="rotate" aria-label="Повернуть на 90°">
+          <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-8-8c2.24 0 4.38.9 5.99 2.44L20 8.4"/><path d="M20 3.5v4.9h-4.9"/></svg>
+        </button>
+        <button class="cell-tool" type="button" data-act="replace" aria-label="Заменить фото">
+          <svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="2.5"/><circle cx="9" cy="9" r="1.8"/><path d="m20.5 15-3.6-3.6a1.8 1.8 0 0 0-2.5 0L6 19.8"/></svg>
+        </button>
+      </div>
       <div class="cell-busy"></div>`;
     frameEl.append(el);
     const c = { el, canvas: el.querySelector('canvas'), w: 0, h: 0, dw: 0, dh: 0 };
-    el.querySelector('.cell-replace').addEventListener('click', () => openPicker(i));
+    el.querySelector('[data-act="rotate"]').addEventListener('click', () => rotate(i));
+    el.querySelector('[data-act="replace"]').addEventListener('click', () => openPicker(i));
     attachGestures(c, i);
     return c;
   });
-  state.photos.slice(n).forEach(disposePhoto);
   state.photos.length = n;
 }
 
 // ---------- Отрисовка ----------
 
-const viewKey = (p, c) => `${c.dw}x${c.dh}|${p.view.z}|${p.view.px}|${p.view.py}`;
+const viewKey = (p, c) => `${c.dw}x${c.dh}|${p.rot}|${p.view.z}|${p.view.px}|${p.view.py}`;
 
 function renderCell(i) {
   const c = cells[i];
@@ -151,12 +160,105 @@ function dropOriginal() {
   original = { photo: null, promise: null };
 }
 
+// ---------- История: отмена и возврат ----------
+
+// Снимок — формат, деление и что лежит в каждой ячейке. Сами фото не копируются, только ссылки на них.
+const history = { undo: [], redo: [], current: null };
+const knownPhotos = new Set();
+
+function snapshot() {
+  return {
+    frame: state.frame,
+    layout: state.layout,
+    cells: LAYOUTS[state.layout].map((_, i) => {
+      const p = state.photos[i];
+      return p ? { photo: p, rot: p.rot, view: { ...p.view } } : null;
+    }),
+  };
+}
+
+function sameSnapshot(a, b) {
+  return a.frame === b.frame && a.layout === b.layout && a.cells.length === b.cells.length
+    && a.cells.every((x, i) => {
+      const y = b.cells[i];
+      if (!x || !y) return x === y;
+      return x.photo === y.photo && x.rot === y.rot
+        && x.view.z === y.view.z && x.view.px === y.view.px && x.view.py === y.view.py;
+    });
+}
+
+function commit() {
+  const snap = snapshot();
+  if (sameSnapshot(snap, history.current)) return;
+  history.undo.push(history.current);
+  if (history.undo.length > MAX_HISTORY) history.undo.shift();
+  history.redo = [];
+  history.current = snap;
+  collectPhotos();
+  syncHistory();
+}
+
+function step(from, to) {
+  if (!from.length) return;
+  to.push(history.current);
+  history.current = from.pop();
+  const snap = history.current;
+  state.frame = snap.frame;
+  state.layout = snap.layout;
+  state.photos = snap.cells.map((c) => {
+    if (!c) return undefined;
+    c.photo.rot = c.rot;
+    c.photo.view = { ...c.view };
+    return c.photo;
+  });
+  syncChoices();
+  layoutFrame();
+  collectPhotos();
+  syncHistory();
+}
+
+// Фото, которых нет ни на экране, ни в истории, освобождаем. Тем, что остались
+// только в истории, хватит превью — остальное пересчитается, если к ним вернуться.
+function collectPhotos() {
+  const inHistory = new Set();
+  for (const snap of [history.current, ...history.undo, ...history.redo]) {
+    snap.cells.forEach((c) => c && inHistory.add(c.photo));
+  }
+  for (const p of knownPhotos) {
+    if (state.photos.includes(p)) continue;
+    if (original.photo === p) dropOriginal();
+    if (inHistory.has(p)) {
+      freeCanvas(p.patch?.canvas);
+      p.patch = null;
+    } else {
+      disposePhoto(p);
+      knownPhotos.delete(p);
+    }
+  }
+}
+
+function syncHistory() {
+  undoBtn.disabled = !history.undo.length;
+  redoBtn.disabled = !history.redo.length;
+}
+
+undoBtn.addEventListener('click', () => step(history.undo, history.redo));
+redoBtn.addEventListener('click', () => step(history.redo, history.undo));
+
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.code !== 'KeyZ') return;
+  e.preventDefault();
+  if (e.shiftKey) step(history.redo, history.undo);
+  else step(history.undo, history.redo);
+});
+
 // ---------- Жесты ----------
 
 function attachGestures(c, i) {
   const pts = new Map();
   let moved = false;
   let origin = null;
+  let wheelTimer;
   const local = (e) => {
     const b = c.el.getBoundingClientRect();
     return { x: e.clientX - b.left, y: e.clientY - b.top };
@@ -165,7 +267,7 @@ function attachGestures(c, i) {
   const dist = (a, b) => Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
 
   c.el.addEventListener('pointerdown', (e) => {
-    if (!state.photos[i] || e.target.closest('.cell-replace')) return;
+    if (!state.photos[i] || e.target.closest('.cell-tools')) return;
     c.el.setPointerCapture(e.pointerId);
     const pt = local(e);
     pts.set(e.pointerId, pt);
@@ -190,14 +292,18 @@ function attachGestures(c, i) {
     }
   });
 
+  // Один жест — от первого касания до последнего отпущенного пальца — один шаг истории.
   const end = (e) => {
-    if (pts.delete(e.pointerId) && pts.size === 0) schedulePatch(i);
+    if (pts.delete(e.pointerId) && pts.size === 0) {
+      schedulePatch(i);
+      commit();
+    }
   };
   c.el.addEventListener('pointerup', end);
   c.el.addEventListener('pointercancel', end);
 
   c.el.addEventListener('click', (e) => {
-    if (e.target.closest('.cell-replace')) return;
+    if (e.target.closest('.cell-tools')) return;
     if (moved) {
       moved = false;
       return;
@@ -212,6 +318,8 @@ function attachGestures(c, i) {
     const m = local(e);
     transform(i, m, m, Math.exp(-e.deltaY * 0.0015));
     schedulePatch(i);
+    clearTimeout(wheelTimer);
+    wheelTimer = setTimeout(commit, 400);
   }, { passive: false });
 }
 
@@ -222,12 +330,23 @@ function transform(i, from, to, f) {
   const v = p.view;
   const z = Math.max(1, v.z * f);
   const k = z / v.z;
-  p.view = clampView(c.w, c.h, p.iw, p.ih, {
+  const [pw, ph] = photoSize(p);
+  p.view = clampView(c.w, c.h, pw, ph, {
     z,
     px: (to.x + (v.px * c.w - from.x) * k) / c.w,
     py: (to.y + (v.py * c.h - from.y) * k) / c.h,
   });
   requestRender(i);
+}
+
+function rotate(i) {
+  const p = state.photos[i];
+  if (!p) return;
+  p.rot = (p.rot + 1) % 4;
+  p.view = fitView();
+  renderCell(i);
+  schedulePatch(i, 0);
+  commit();
 }
 
 // ---------- Выбор фото ----------
@@ -249,10 +368,11 @@ picker.addEventListener('change', async () => {
   dropOriginal();
   try {
     const photo = await loadPhoto(file);
-    disposePhoto(state.photos[i]);
+    knownPhotos.add(photo);
     state.photos[i] = photo;
     renderCell(i);
     schedulePatch(i, 0);
+    commit();
   } catch (e) {
     console.error(e);
     toast('Не удалось открыть фото');
@@ -272,21 +392,25 @@ function resetViews() {
   });
 }
 
-function bindChoice(attr, key) {
-  const buttons = document.querySelectorAll(`[data-${attr}]`);
-  const sync = () => buttons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset[attr] === state[key])));
-  buttons.forEach((b) => b.addEventListener('click', () => {
-    if (state[key] === b.dataset[attr]) return;
-    state[key] = b.dataset[attr];
-    sync();
-    resetViews();
-    layoutFrame();
-  }));
-  sync();
+const choices = [...document.querySelectorAll('[data-frame], [data-layout]')];
+
+function syncChoices() {
+  choices.forEach((b) => {
+    const on = b.dataset.frame ? b.dataset.frame === state.frame : b.dataset.layout === state.layout;
+    b.setAttribute('aria-pressed', String(on));
+  });
 }
 
-bindChoice('frame', 'frame');
-bindChoice('layout', 'layout');
+choices.forEach((b) => b.addEventListener('click', () => {
+  const key = b.dataset.frame ? 'frame' : 'layout';
+  const value = b.dataset[key];
+  if (state[key] === value) return;
+  state[key] = value;
+  syncChoices();
+  resetViews();
+  layoutFrame();
+  commit();
+}));
 
 // ---------- Сохранение ----------
 
@@ -390,6 +514,9 @@ function toast(text) {
 // Не даём Safari масштабировать всю страницу щипком.
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 
+syncChoices();
+history.current = snapshot();
+syncHistory();
 new ResizeObserver(() => layoutFrame()).observe(stage);
 
 if ('serviceWorker' in navigator) {

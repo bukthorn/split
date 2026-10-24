@@ -1,6 +1,6 @@
 // Кэширует приложение, чтобы оно открывалось без интернета.
 // Отдаём из кэша сразу, а свежую версию тихо подтягиваем на следующий запуск.
-const CACHE = 'split-v1';
+const CACHE = 'split-v2';
 const ASSETS = [
   './',
   'index.html',
@@ -14,7 +14,9 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // cache: 'reload' — мимо HTTP-кэша, иначе GitHub Pages может отдать прошлую версию.
+  const requests = ASSETS.map((url) => new Request(url, { cache: 'reload' }));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(requests)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
