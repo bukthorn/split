@@ -18,13 +18,17 @@
 <body>
   <main class="app">
     <nav class="rail rail-left" aria-label="Формат">
-      <button class="tool" type="button" data-frame="story" aria-label="Сторис 9:16">
+      <button class="tool" type="button" data-frame="story" aria-label="Stories 9:16">
         <svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2"/></svg>
-        <span>Сторис</span>
+        <span>Stories</span>
       </button>
-      <button class="tool" type="button" data-frame="post" aria-label="Пост 4:5">
+      <button class="tool" type="button" data-frame="post" aria-label="Post 4:5">
         <svg viewBox="0 0 24 24"><rect x="4.5" y="2.6" width="15" height="18.8" rx="2"/></svg>
-        <span>Пост</span>
+        <span>Post</span>
+      </button>
+      <button class="tool" type="button" data-frame="free" aria-label="Free — пропорции задаются краями">
+        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 2.6"/></svg>
+        <span>Free</span>
       </button>
     </nav>
 
@@ -33,6 +37,13 @@
         <div class="cells" id="cells"></div>
         <div class="line-dels" id="line-dels"></div>
         <div class="edit-layer" id="edit-layer" hidden></div>
+        <div class="edges" id="edges">
+          <div class="edge edge-l" data-side="l" aria-label="Левый край"></div>
+          <div class="edge edge-r" data-side="r" aria-label="Правый край"></div>
+          <div class="edge edge-t" data-side="t" aria-label="Верхний край"></div>
+          <div class="edge edge-b" data-side="b" aria-label="Нижний край"></div>
+        </div>
+        <div class="frame-badge" id="frame-badge" hidden></div>
       </div>
     </section>
 

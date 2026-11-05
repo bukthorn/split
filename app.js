@@ -1,6 +1,6 @@
 // Split — коллажи для Instagram. Всё считается в браузере: фото не покидают устройство.
 import { ctx2d, decodeFile, disposePhoto, fitView, clampView, freeCanvas, loadPhoto, makeCanvas, paintCell, photoSize } from './imaging.js';
-import { addLine, cloneLines, computeFaces, crossings, dividedSpan, dragRange, extent, facesOk, junctions, removeLine, trimLine } from './layout.js';
+import { addLine, cloneLines, computeFaces, crossings, dividedSpan, dragRange, extent, facesOk, junctions, removeLine, stretchLines, trimLine } from './layout.js';
 
 // Итоговые размеры — те, в которых Instagram показывает публикации.
 const FRAMES = {
@@ -8,10 +8,26 @@ const FRAMES = {
   post: { w: 1080, h: 1350 },
 };
 
+// Free: пропорции задаются краями фрейма. Ширина — 1440, больше Instagram не принимает
+// и сам уменьшает до неё; высота — по пропорции.
+const FREE_WIDTH = 1440;
+// Пропорции, которые лента Instagram показывает без обрезки: от 3:4 до 1.91:1.
+const ASPECT_MIN = 3 / 4;
+const ASPECT_MAX = 1.91;
+// К этим пропорциям края фрейма прилипают, кроме пропорций фото в крайних ячейках.
+const ASPECTS = [[3, 4], [4, 5], [1, 1], [4, 3], [16, 9], [1.91, 1]];
+// Отступ вокруг фрейма в режиме Free, чтобы ручки краёв не наезжали на панели.
+const EDGE_PAD = 16;
+
 const MAX_HISTORY = 50;
 
 // photos[i] лежит в ячейке faces[i]; ячейки пересчитываются из линий.
-const state = { frame: 'story', lines: [], photos: [] };
+// aspect — ширина к высоте у формата Free.
+const state = { frame: 'story', aspect: 3 / 4, lines: [], photos: [] };
+const frameDims = () => (state.frame === 'free'
+  ? { w: FREE_WIDTH, h: Math.round(FREE_WIDTH / state.aspect) }
+  : FRAMES[state.frame]);
+const frameAspect = () => (state.frame === 'free' ? state.aspect : FRAMES[state.frame].w / FRAMES[state.frame].h);
 let faces = computeFaces(state.lines);
 // Режим линий: null — обычный, 'h' / 'v' — тап по фрейму проводит линию.
 let editMode = null;
@@ -28,6 +44,7 @@ const frameEl = $('#frame');
 const cellsEl = $('#cells');
 const layer = $('#edit-layer');
 const delLayer = $('#line-dels');
+const badge = $('#frame-badge');
 const picker = $('#picker');
 const saveBtn = $('#save');
 const undoBtn = $('#undo');
@@ -44,8 +61,9 @@ function faceRects(fw, fh) {
 }
 
 function layoutFrame() {
-  const f = FRAMES[state.frame];
-  const s = Math.min(stage.clientWidth / f.w, stage.clientHeight / f.h);
+  const f = frameDims();
+  const pad = state.frame === 'free' ? 2 * EDGE_PAD : 0;
+  const s = Math.min((stage.clientWidth - pad) / f.w, (stage.clientHeight - pad) / f.h);
   if (!(s > 0)) return;
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const fw = Math.round(f.w * s * dpr);
@@ -394,7 +412,7 @@ function startPhotoGesture(d) {
 }
 
 layer.addEventListener('pointerdown', (e) => {
-  if (e.target.closest('.trim, .del, .cell-pick')) return;
+  if (e.target.closest('.trim, .del, .cell-pick') || edgeDrag) return;
   if (drag && !drag.line) {
     layer.setPointerCapture(e.pointerId);
     drag.pointers.set(e.pointerId, e);
@@ -423,12 +441,26 @@ layer.addEventListener('pointerdown', (e) => {
   };
 });
 
-// Центр всего фрейма и центр части, которую линия делит.
+// Центр всего фрейма, центр части, которую линия делит, и положения, где фото
+// в соседней с линией ячейке заполняет её целиком, без размытых полей.
 function snapTargets(l) {
   const [lo, hi] = dividedSpan(state.lines, faces, l);
   const [min, max] = dragRange(state.lines, faces, l);
   const targets = [{ pos: 0.5, frame: true }];
   if (Math.abs((lo + hi) / 2 - 0.5) > 1e-9) targets.push({ pos: (lo + hi) / 2, frame: false });
+  const a = frameAspect();
+  const [s, e] = extent(state.lines, l);
+  const [from, to] = l.dir === 'h' ? ['x0', 'x1'] : ['y0', 'y1'];
+  faces.forEach((f, i) => {
+    const p = state.photos[i];
+    if (!p || Math.min(f[to], e) - Math.max(f[from], s) <= 1e-9) return;
+    const [pw, ph] = photoSize(p);
+    // Сколько нужно ячейке вдоль линии, чтобы её пропорции совпали с фото, — в долях фрейма.
+    const need = l.dir === 'h' ? (f.x1 - f.x0) * a * ph / pw : (f.y1 - f.y0) * pw / ph / a;
+    const [lo0, hi0] = l.dir === 'h' ? [f.y0, f.y1] : [f.x0, f.x1];
+    if (Math.abs(hi0 - l.pos) < 1e-9) targets.push({ pos: lo0 + need, frame: false });
+    if (Math.abs(lo0 - l.pos) < 1e-9) targets.push({ pos: hi0 - need, frame: false });
+  });
   return targets.filter((t) => t.pos >= min && t.pos <= max);
 }
 
@@ -553,6 +585,7 @@ const knownPhotos = new Set();
 function snapshot() {
   return {
     frame: state.frame,
+    aspect: state.aspect,
     lines: cloneLines(state.lines),
     cells: faces.map((_, i) => {
       const p = state.photos[i];
@@ -562,7 +595,7 @@ function snapshot() {
 }
 
 function sameSnapshot(a, b) {
-  return a.frame === b.frame && JSON.stringify(a.lines) === JSON.stringify(b.lines)
+  return a.frame === b.frame && a.aspect === b.aspect && JSON.stringify(a.lines) === JSON.stringify(b.lines)
     && a.cells.length === b.cells.length
     && a.cells.every((x, i) => {
       const y = b.cells[i];
@@ -589,6 +622,7 @@ function step(from, to) {
   history.current = from.pop();
   const snap = history.current;
   state.frame = snap.frame;
+  state.aspect = snap.aspect;
   state.lines = cloneLines(snap.lines);
   faces = computeFaces(state.lines);
   state.photos = snap.cells.map((c) => {
@@ -748,6 +782,7 @@ function rotate(i) {
   if (!p) return;
   p.rot = (p.rot + 1) % 4;
   p.view = fitView();
+  fitFrameToPhoto(i);
   renderCell(i);
   schedulePatch(i, 0);
   commit();
@@ -777,6 +812,7 @@ picker.addEventListener('change', async () => {
     if (cells[i] !== cell) return;
     knownPhotos.add(photo);
     state.photos[i] = photo;
+    fitFrameToPhoto(i);
     renderCell(i);
     renderOverlay();
     schedulePatch(i, 0);
@@ -804,16 +840,150 @@ function syncChoices() {
   document.querySelectorAll('[data-frame]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.frame === state.frame)));
   document.querySelectorAll('[data-tool]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === editMode)));
   $('#preview').setAttribute('aria-pressed', String(preview));
+  frameEl.toggleAttribute('data-free', state.frame === 'free');
 }
 
-document.querySelectorAll('[data-frame]').forEach((b) => b.addEventListener('click', () => {
-  if (state.frame === b.dataset.frame) return;
-  state.frame = b.dataset.frame;
-  resetViews();
+// В Free фрейм остаётся таким, каким был, — просто его края начинают тянуться.
+// Из Stories он становится 3:4: 9:16 лента Instagram обрезала бы.
+function setFrame(frame) {
+  if (state.frame === frame) return;
+  const aspect = clampAspect(frameAspect());
+  state.frame = frame;
+  if (frame === 'free') {
+    state.aspect = aspect;
+    toast('Тяни края фрейма — они прилипают к пропорциям фото');
+  } else {
+    resetViews();
+  }
   syncChoices();
   layoutFrame();
   commit();
-}));
+}
+
+document.querySelectorAll('[data-frame]').forEach((b) => b.addEventListener('click', () => setFrame(b.dataset.frame)));
+
+// ---------- Free: края фрейма ----------
+
+const clampAspect = (a) => Math.min(ASPECT_MAX, Math.max(ASPECT_MIN, a));
+
+// Тянется только край: ячейки у него меняют размер, остальные сохраняют и размер, и пропорции.
+// dir — какие линии сдвигаются, fromEnd — край отсчитывается от конца (левый, верхний).
+const SIDES = {
+  l: { dir: 'v', fromEnd: true, edge: (f) => f.x0 < 1e-9 },
+  r: { dir: 'v', fromEnd: false, edge: (f) => f.x1 > 1 - 1e-9 },
+  t: { dir: 'h', fromEnd: true, edge: (f) => f.y0 < 1e-9 },
+  b: { dir: 'h', fromEnd: false, edge: (f) => f.y1 > 1 - 1e-9 },
+};
+
+const edgesEl = $('#edges');
+let edgeDrag = null;
+
+// Линии при новой пропорции a: k — во сколько раз старая сторона фрейма больше новой.
+function stretchedLines(d, a) {
+  const s = SIDES[d.side];
+  return stretchLines(d.lines, s.dir, s.dir === 'v' ? d.aspect / a : a / d.aspect, s.fromEnd);
+}
+
+// Стандартные пропорции и те, при которых фото в ячейке у края заполняет её целиком.
+function edgeTargets(side, a0) {
+  const s = SIDES[side];
+  const targets = ASPECTS.map(([w, h]) => ({ a: w / h, label: `${w}:${h}` }));
+  faces.forEach((f, i) => {
+    const p = state.photos[i];
+    if (!p || !s.edge(f)) return;
+    const [pw, ph] = photoSize(p);
+    const a = s.dir === 'v'
+      ? (side === 'r' ? f.x0 : 1 - f.x1) * a0 + (f.y1 - f.y0) * pw / ph
+      : 1 / ((side === 'b' ? f.y0 : 1 - f.y1) / a0 + (f.x1 - f.x0) * ph / pw);
+    targets.push({ a, label: 'по фото' });
+  });
+  return targets.filter((t) => t.a >= ASPECT_MIN && t.a <= ASPECT_MAX);
+}
+
+edgesEl.addEventListener('pointerdown', (e) => {
+  const handle = e.target.closest('[data-side]');
+  if (!handle || edgeDrag || drag) return;
+  handle.setPointerCapture(e.pointerId);
+  const side = handle.dataset.side;
+  edgeDrag = {
+    side,
+    handle,
+    pointerId: e.pointerId,
+    start: { x: e.clientX, y: e.clientY },
+    size: { ...frameSize },
+    aspect: state.aspect,
+    lines: cloneLines(state.lines),
+    targets: edgeTargets(side, state.aspect),
+    snap: null,
+  };
+});
+
+// Фрейм стоит по центру, поэтому край под пальцем — когда сторона растёт на двойной сдвиг.
+edgesEl.addEventListener('pointermove', (e) => {
+  const d = edgeDrag;
+  if (!d || e.pointerId !== d.pointerId) return;
+  const s = SIDES[d.side];
+  const sign = d.side === 'l' || d.side === 't' ? -1 : 1;
+  const w = s.dir === 'v' ? d.size.w + 2 * sign * (e.clientX - d.start.x) : d.size.w;
+  const h = s.dir === 'h' ? d.size.h + 2 * sign * (e.clientY - d.start.y) : d.size.h;
+  let a = clampAspect(w > 0 && h > 0 ? w / h : s.dir === 'v' ? 0 : Infinity);
+  d.snap = null;
+  let best = SNAP_PX;
+  for (const t of d.targets) {
+    const dist = s.dir === 'v' ? Math.abs(t.a * d.size.h - w) / 2 : Math.abs(d.size.w / t.a - h) / 2;
+    if (dist < best) {
+      best = dist;
+      d.snap = t;
+    }
+  }
+  if (d.snap) a = d.snap.a;
+  // Ячейки у края не ужимаются меньше минимума: ищем ближайшую допустимую пропорцию.
+  const fits = (x) => facesOk(computeFaces(stretchedLines(d, x)));
+  if (!fits(a)) {
+    let ok = d.aspect, bad = a;
+    for (let k = 0; k < 24; k++) {
+      const mid = (ok + bad) / 2;
+      if (fits(mid)) ok = mid;
+      else bad = mid;
+    }
+    a = ok;
+    d.snap = null;
+  }
+  const lines = stretchedLines(d, a);
+  const nextFaces = computeFaces(lines);
+  state.photos = remapPhotos(faces, state.photos, nextFaces);
+  state.lines = lines;
+  state.aspect = a;
+  faces = nextFaces;
+  d.handle.classList.toggle('snap', !!d.snap);
+  const { w: ow, h: oh } = frameDims();
+  badge.textContent = `${ow}×${oh}${d.snap ? ` · ${d.snap.label}` : ''}`;
+  badge.toggleAttribute('data-snap', !!d.snap);
+  badge.hidden = false;
+  frameEl.setAttribute('data-resizing', '');
+  requestLayout();
+});
+
+const endEdgeDrag = (e) => {
+  const d = edgeDrag;
+  if (!d || e.pointerId !== d.pointerId) return;
+  edgeDrag = null;
+  d.handle.classList.remove('snap');
+  badge.hidden = true;
+  frameEl.removeAttribute('data-resizing');
+  commit();
+};
+edgesEl.addEventListener('pointerup', endEdgeDrag);
+edgesEl.addEventListener('pointercancel', endEdgeDrag);
+
+// Free без линий: фрейм сам принимает пропорции фото.
+function fitFrameToPhoto(i) {
+  const p = state.photos[i];
+  if (state.frame !== 'free' || state.lines.length || !p) return;
+  const [pw, ph] = photoSize(p);
+  state.aspect = clampAspect(pw / ph);
+  layoutFrame();
+}
 
 document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('click', () => {
   setEditMode(editMode === b.dataset.tool ? null : b.dataset.tool);
@@ -822,7 +992,7 @@ document.querySelectorAll('[data-tool]').forEach((b) => b.addEventListener('clic
 // ---------- Сохранение ----------
 
 async function renderCollage() {
-  const f = FRAMES[state.frame];
+  const f = frameDims();
   const out = makeCanvas(f.w, f.h);
   const ctx = ctx2d(out);
   const rects = faceRects(f.w, f.h);

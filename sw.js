@@ -1,6 +1,6 @@
 // Кэширует приложение, чтобы оно открывалось без интернета.
 // Отдаём из кэша сразу, а свежую версию тихо подтягиваем на следующий запуск.
-const CACHE = 'split-v3';
+const CACHE = 'split-v4';
 const ASSETS = [
   './',
   'index.html',
@@ -31,7 +31,9 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
-  const fresh = fetch(req).then(async (res) => {
+  // no-cache — всегда спрашиваем сервер. Иначе HTTP-кэш может отдать старую версию одного
+  // файла вместе с новыми остальными, и модули не сойдутся.
+  const fresh = fetch(new Request(req.url, { cache: 'no-cache' })).then(async (res) => {
     if (res.ok) await (await caches.open(CACHE)).put(req, res.clone());
     return res;
   });

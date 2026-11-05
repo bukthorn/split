@@ -207,7 +207,71 @@ svg {
 /* Предпросмотр: только сам коллаж — ни кнопок, ни жестов. */
 .frame[data-preview] .cell { pointer-events: none; }
 .frame[data-preview] .cell-tools,
-.frame[data-preview] .line-dels { display: none; }
+.frame[data-preview] .line-dels,
+.frame[data-preview] .edges { display: none; }
+
+/* ---------- Free: края фрейма ---------- */
+
+.edges {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+}
+
+.frame[data-free] .edges { display: block; }
+
+/* Ручка ловится полосой пошире, а видна узкой планкой прямо на краю. */
+.edge {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.edge::before {
+  content: "";
+  border-radius: 3px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+.edge-l, .edge-r { top: 50%; width: 28px; height: 64px; margin-top: -32px; cursor: ew-resize; }
+.edge-t, .edge-b { left: 50%; width: 64px; height: 28px; margin-left: -32px; cursor: ns-resize; }
+.edge-l { left: -14px; }
+.edge-r { right: -14px; }
+.edge-t { top: -14px; }
+.edge-b { bottom: -14px; }
+.edge-l::before, .edge-r::before { width: 6px; height: 40px; }
+.edge-t::before, .edge-b::before { width: 40px; height: 6px; }
+
+/* Край прилип к пропорции. */
+.edge.snap::before { background: var(--snap); }
+
+.frame-badge {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.frame-badge[data-snap] { color: var(--snap); }
+
+/* Пока тянется край, на фрейме ничего лишнего — видно только раскладку. */
+.frame[data-resizing] .cell-tools,
+.frame[data-resizing] .line-dels,
+.frame[data-resizing] .edit-layer > :not(.seg) { visibility: hidden; }
 .frame[data-preview] .cell-empty > * { visibility: hidden; }
 
 .frame[data-edit] .cell-tools { display: none; }

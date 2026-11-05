@@ -140,6 +140,13 @@ function findStop(lines, l, from, dir) {
   return best ? best.id : EDGES[l.dir][dir < 0 ? 0 : 1];
 }
 
+// Сторона фрейма вдоль линий dir поменялась: k — во сколько раз старая длина больше новой.
+// Линии остаются на прежнем расстоянии от неподвижного края: от начала, а при fromEnd — от конца.
+export function stretchLines(lines, dir, k, fromEnd) {
+  return lines.map((l) => (l.dir !== dir ? { ...l }
+    : { ...l, pos: fromEnd ? 1 - (1 - l.pos) * k : l.pos * k }));
+}
+
 export function addLine(lines, dir, pos) {
   const l = newLine(dir, pos);
   return { lines: [...cloneLines(lines), l], id: l.id };
